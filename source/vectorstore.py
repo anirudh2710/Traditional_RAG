@@ -1,7 +1,9 @@
 import os
+import json
 import faiss
 import numpy as np
 import pickle
+from pathlib import Path
 from typing import List, Any
 from sentence_transformers import SentenceTransformer
 from source.embedding import EmbeddingPipeline
@@ -18,15 +20,74 @@ class FaissVectorStore:
         self.chunk_overlap = chunk_overlap
         print(f"[INFO] Loaded embedding model: {embedding_model}")
 
-    def build_from_documents(self, documents: List[Any]):
+    def build_from_documents(self, documents: List[Any], data_dir: str = "data"):
         print(f"[INFO] Building vector store from {len(documents)} raw documents...")
+        # Reset the index and metadata so we rebuild from scratch cleanly
+        self.index = None
+        self.metadata = []
         emb_pipe = EmbeddingPipeline(model_name=self.embedding_model, chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
         chunks = emb_pipe.chunk_documents(documents)
         embeddings = emb_pipe.embed_chunks(chunks)
-        metadatas = [{"text": chunk.page_content} for chunk in chunks]
+        metadatas = []
+        for chunk in chunks:
+            meta = dict(chunk.metadata) if hasattr(chunk, "metadata") and chunk.metadata else {}
+            meta["text"] = chunk.page_content
+            if "source" in meta:
+                meta["source_name"] = os.path.basename(str(meta["source"]))
+            metadatas.append(meta)
         self.add_embeddings(np.array(embeddings).astype('float32'), metadatas)
         self.save()
+        self.save_manifest(data_dir)
         print(f"[INFO] Vector store built and saved to {self.persist_dir}")
+
+    def get_data_manifest(self, data_dir: str = "data") -> dict:
+        """
+        Scan data_dir for all supported files and retrieve their paths and last modified times.
+        """
+        data_path = Path(data_dir).resolve()
+        if not data_path.exists():
+            return {}
+        
+        # Supported extensions matching data_loader.py
+        extensions = ['*.pdf', '*.txt', '*.csv', '*.xlsx', '*.docx', '*.json']
+        manifest = {}
+        for ext in extensions:
+            for file in data_path.glob(f'**/{ext}'):
+                if file.is_file():
+                    try:
+                        rel_path = str(file.relative_to(data_path))
+                    except ValueError:
+                        rel_path = str(file)
+                    manifest[rel_path] = file.stat().st_mtime
+        return manifest
+
+    def save_manifest(self, data_dir: str = "data"):
+        manifest = self.get_data_manifest(data_dir)
+        manifest_path = os.path.join(self.persist_dir, "manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"[INFO] Saved index manifest to {manifest_path}")
+
+    def is_out_of_sync(self, data_dir: str = "data") -> bool:
+        """
+        Check if the cached FAISS index is out of sync with the files in data_dir.
+        """
+        manifest_path = os.path.join(self.persist_dir, "manifest.json")
+        faiss_path = os.path.join(self.persist_dir, "faiss.index")
+        meta_path = os.path.join(self.persist_dir, "metadata.pkl")
+        
+        # If any required file is missing, we are out of sync
+        if not (os.path.exists(manifest_path) and os.path.exists(faiss_path) and os.path.exists(meta_path)):
+            return True
+            
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                saved_manifest = json.load(f)
+        except Exception:
+            return True
+            
+        current_manifest = self.get_data_manifest(data_dir)
+        return current_manifest != saved_manifest
 
     def add_embeddings(self, embeddings: np.ndarray, metadatas: List[Any] = None):
         dim = embeddings.shape[1]

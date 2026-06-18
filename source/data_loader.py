@@ -1,9 +1,10 @@
+import json
 from pathlib import Path
 from typing import List, Any
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader
+from langchain_core.documents import Document
+from langchain_community.document_loaders import PyMuPDFLoader, TextLoader, CSVLoader
 from langchain_community.document_loaders import Docx2txtLoader
 from langchain_community.document_loaders.excel import UnstructuredExcelLoader
-from langchain_community.document_loaders import JSONLoader
 
 def load_all_documents(data_dir: str) -> List[Any]:
     """
@@ -21,7 +22,7 @@ def load_all_documents(data_dir: str) -> List[Any]:
     for pdf_file in pdf_files:
         print(f"[DEBUG] Loading PDF: {pdf_file}")
         try:
-            loader = PyPDFLoader(str(pdf_file))
+            loader = PyMuPDFLoader(str(pdf_file))
             loaded = loader.load()
             print(f"[DEBUG] Loaded {len(loaded)} PDF docs from {pdf_file}")
             documents.extend(loaded)
@@ -86,9 +87,11 @@ def load_all_documents(data_dir: str) -> List[Any]:
     for json_file in json_files:
         print(f"[DEBUG] Loading JSON: {json_file}")
         try:
-            loader = JSONLoader(str(json_file))
-            loaded = loader.load()
-            print(f"[DEBUG] Loaded {len(loaded)} JSON docs from {json_file}")
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            content = json.dumps(data, indent=2, ensure_ascii=False)
+            loaded = [Document(page_content=content, metadata={"source": str(json_file)})]
+            print(f"[DEBUG] Loaded JSON doc from {json_file}")
             documents.extend(loaded)
         except Exception as e:
             print(f"[ERROR] Failed to load JSON {json_file}: {e}")
